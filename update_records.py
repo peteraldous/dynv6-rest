@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent
 RECORDS_FILE = ROOT / ".records"
+ZONE_FILE = ROOT / ".zone"
 
 DYNV6_PREFIX = "https://dynv6.com/api/v2/zones"
 
@@ -22,8 +23,8 @@ def get_zone(domain, headers):
     ).json()
     for zone in zones:
         if zone.get("name") == domain:
-            return zone
-    return {}
+            return zone.get("id")
+    return None
 
 
 def main():
@@ -43,8 +44,16 @@ def main():
     parser.add_argument(
         "-z",
         "--zone",
-        help="""Either the domain name for a zone (e.g., `example.com`) or a zone ID from dynv6 (see
-        https://dynv6.github.io/api-spec/#tag/zones/operation/findZones""",
+        help="""The domain name for a zone (e.g., `example.com`)""",
+    )
+    parser.add_argument(
+        "-i",
+        "--zone_id",
+        help=(
+            """A numerical zone ID from dynv6 (see """
+            """https://dynv6.github.io/api-spec/#tag/zones/operation/findZones)"""
+        ),
+        type=int,
     )
     parser.add_argument(
         "-t", "--token", required=True, help="An HTTP token from https://dynv6.com/keys"
@@ -53,20 +62,13 @@ def main():
         "-p",
         "--prefix",
         help="""The prefix for the record to be updated. If your dynv6 zone has the domain
-        `my.zone`, then specifying a prefix of example updates `example.my.zone`. If left blank,
-        updates will apply to the zone itself instead of to records.""",
+        `my.zone`, then specifying a prefix of example updates `example.my.zone`.""",
+        required=True,
     )
     args = parser.parse_args()
     ipv6_external_address = args.ipv6
     token = args.token
     prefix = args.prefix
-    zone = args.zone
-
-    # Attempt to use `zone` as an integral zone ID. If not, assume it's a domain name.
-    try:
-        zone_id = int(zone)
-    except ValueError:
-        zone_id = None
 
     headers = {
         "Content-Type": "application/json",
@@ -74,182 +76,161 @@ def main():
         "Authorization": f"Bearer {token}",
     }
 
-    ipv4_record = None
-    ipv6_record = None
-    ipv4_record_address = None
-    ipv6_record_address = None
-    zone_ipv4 = None
-    zone_ipv6 = None
+    cache_zone = None
+    cache_zone_id = None
     try:
-        with open(RECORDS_FILE, "r", encoding="utf8") as state:
-            contents = json.load(state)
-            for record in contents:
-                # One object in the JSON array dumped to `.record` may contain just a zone ID
-                if "zone_id" in record:
-                    record_zone_id = record["zone_id"]
-                    zone_ipv4 = record.get("ipv4")
-                    zone_ipv6 = record.get("ipv6")
-                    if zone_id:
-                        assert record_zone_id == zone_id
-                    else:
-                        zone_id = record_zone_id
-                    continue
-                # Other objects in the JSON array will contain either "A" (ipv4) or "AAAA" (ipv6)
-                # records.
-                if record.get("type") == "A":
-                    ipv4_record = record.get("id")
-                    ipv4_record_address = record.get("data")
-                elif record.get("type") == "AAAA":
-                    ipv6_record = record.get("id")
-                    ipv6_record_address = record.get("data")
+        with open(ZONE_FILE, "r", encoding="utf8") as zone_file:
+            contents = json.load(zone_file)
+            cache_zone = contents.get("name")
+            cache_zone_id = contents.get("id")
     except FileNotFoundError:
         pass
     except json.decoder.JSONDecodeError:
         pass
 
-    # If all else fails, ask dynv6.com for a list of zones and look for one that matches
-    if not zone_id:
-        zone_data = get_zone(zone, headers)
-        zone_id = zone_data.get("id")
-        zone_ipv4 = zone_data.get("ipv4_address")
-        zone_ipv6 = zone_data.get("ipv6_prefix")
+    # Manual validation of zone and zone_id
 
-    current_ipv4_address = None
+    zone = args.zone
+    if zone is None:
+        zone = cache_zone
+    else:
+        assert cache_zone is None or cache_zone == zone
+
+    zone_id = args.zone_id
+    if zone_id is None:
+        zone_id = cache_zone_id
+    else:
+        assert cache_zone_id is None or cache_zone_id == zone_id
+
+    if zone is None and zone_id is None:
+        raise argparse.ArgumentError(
+            "A zone must be specified. It may be specified with -z "
+            f"or -i on the command line or as `name` or `id` in {ZONE_FILE}"
+        )
+
+    if zone_id is None:
+        zone_id = get_zone(zone, headers)
+
+    cache_id4 = None
+    cache_id6 = None
+    cache_address4 = None
+    cache_address6 = None
+    try:
+        with open(RECORDS_FILE, "r", encoding="utf8") as state:
+            contents = json.load(state)
+            for record in contents:
+                # If there is a name but it doesn't match the specified prefix, ignore it
+                name = record.get("name")
+                if name and name != prefix:
+                    continue
+                # Look up A (ipv4) and AAAA (ipv6) data from the cache
+                if record.get("type") == "A":
+                    assert cache_id4 is None and cache_address4 is None
+                    cache_id4 = record.get("id")
+                    cache_address4 = record.get("data")
+                elif record.get("type") == "AAAA":
+                    assert cache_id6 is None and cache_address6 is None
+                    cache_id6 = record.get("id")
+                    cache_address6 = record.get("data")
+    except FileNotFoundError:
+        pass
+    except json.decoder.JSONDecodeError:
+        pass
+
+    current_address4 = None
     # uncomment to enable updating of an A record
     # This line obtains a publicly-visible ipv4 address
-    # current_ipv4_address = requests.get("https://api.ipify.org").content.decode("utf8")
+    # current_address4 = requests.get("https://api.ipify.org").content.decode("utf8")
     try:
         # Attempt to connect to an external host using ipv6 and then get the socket's IP address
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.connect((ipv6_external_address, 1))
-        current_ipv6_address = sock.getsockname()[0]
+        current_address6 = sock.getsockname()[0]
     except OSError:
-        current_ipv6_address = None
+        current_address6 = None
 
+    # If there is no cached record ID for the prefix, query dynv6 and look for a match
+    update4 = cache_id4 is None and current_address4 is not None
+    update6 = cache_id6 is None and current_address6 is not None
+    if update4 or update6:
+        records = requests.get(
+            f"{DYNV6_PREFIX}/{zone_id}/records",
+            headers=headers,
+        ).json()
+        for record in records:
+            if record.get("name") == prefix:
+                if update4 and record.get("type") == "A":
+                    cache_address4 = record["data"]
+                    cache_id4 = record["id"]
+                elif update6 and record.get("type") == "AAAA":
+                    cache_address6 = record["data"]
+                    cache_id6 = record["id"]
+
+    records = []
     results = []
 
-    if zone_id and not prefix:
-        # Update an existing zone
-        addresses = {}
-        if current_ipv4_address and zone_ipv4 != current_ipv4_address:
-            addresses["ipv4_address"] = current_ipv4_address
-        if current_ipv6_address and zone_ipv6 != current_ipv6_address:
-            addresses["ipv6_prefix"] = current_ipv6_address
-        if addresses:
-            print(f"Updating an existing zone ({zone_id})")
-            response = requests.patch(
-                f"{DYNV6_PREFIX}/{zone_id}",
+    if current_address4 is not None:
+        if cache_address4 == current_address4:
+            print(f"Address unchanged: {current_address4}")
+        records.append({"id": cache_id4, "type": "A", "name": prefix, "data": current_address4})
+    if current_address6 is not None:
+        if cache_address6 == current_address6:
+            print(f"Address unchanged: {current_address6}")
+        records.append(
+            {
+                "id": cache_id6,
+                "type": "AAAA",
+                "name": prefix,
+                "data": current_address6,
+            }
+        )
+
+    for record in records:
+        if record["id"] is None:
+            print(f"Creating a new record: {record}")
+            result = requests.post(
+                f"{DYNV6_PREFIX}/{zone_id}/records",
                 headers=headers,
-                params=addresses,
+                params=record,
             )
-            data = response.json()
-            assert data["id"] == zone_id
-            result = {"zone_id": zone_id}
-            if current_ipv4_address:
-                result["ipv4"] = current_ipv4_address
-            if current_ipv6_address:
-                result["ipv6"] = current_ipv6_address
-            print(f"Successfully updated zone: {result}")
-            results.append(result)
+            if result.status_code != 200:
+                print(f"Error creating a new record: {result} ({result.reason})", file=sys.stderr)
+                continue
+            record["id"] = result.json().get("id")
+            print(record)
         else:
-            print(
-                f"Zone {zone_id} unchanged "
-                f"(ipv4: {current_ipv4_address}; ipv6: {current_ipv6_address}"
+            # PATCH
+            print(f"Updating an existing record ({record["id"]})")
+            result = requests.patch(
+                f"{DYNV6_PREFIX}/{zone_id}/records/{record["id"]}",
+                headers=headers,
+                params=record,
             )
-    else:
-        if not zone_id:
-            # register a new zone
-            params = {"name": zone}
-            if current_ipv4_address:
-                params["ipv4_address"] = current_ipv4_address
-            if current_ipv6_address:
-                params["ipv6_prefix"] = current_ipv6_address
-            print(f"Creating a new zone ({zone})")
-            result = requests.post(DYNV6_PREFIX, headers=headers, params=params)
-            data = result.json()
-            zone_id = data.get("id")
-            if zone_id:
-                result = {"zone_id": zone_id}
-                zone_ipv4 = data.get("ipv4_address")
-                if zone_ipv4:
-                    result["ipv4"] = zone_ipv4
-                zone_ipv6 = data.get("ipv6_prefix")
-                if zone_ipv6:
-                    result["ipv6"] = zone_ipv6
-                print(f"Successfully created a zone: {result}")
-                results.append(result)
-
-        if prefix:
-            # If there is no cached record ID for the prefix, query dynv6 and look for a match
-            if ipv4_record is None and ipv6_record is None:
-                records = requests.get(
-                    f"{DYNV6_PREFIX}/{zone_id}/records",
-                    headers=headers,
-                ).json()
-                for record in records:
-                    if record.get("name") == prefix:
-                        if record.get("type") == "A":
-                            ipv4_record_address = record["data"]
-                            ipv4_record = record["id"]
-                        elif record.get("type") == "AAAA":
-                            ipv6_record_address = record["data"]
-                            ipv6_record = record["id"]
-
-            records = []
-
-            if current_ipv4_address is not None:
-                records.append(
-                    (
-                        ipv4_record,
-                        ipv4_record_address,
-                        {"type": "A", "name": prefix, "data": current_ipv4_address},
-                    )
-                )
-            if current_ipv6_address is not None:
-                records.append(
-                    (
-                        ipv6_record,
-                        ipv6_record_address,
-                        {"type": "AAAA", "name": prefix, "data": current_ipv6_address},
-                    )
-                )
-
-            for record_id, address, record in records:
-                if record_id is None:
-                    print(f"Creating a new record: {record}")
-                    result = requests.post(
-                        f"{DYNV6_PREFIX}/{zone_id}/records",
-                        headers=headers,
-                        params=record,
-                    )
-                    print(result)
-                    record["id"] = result.json().get("id")
-                    print(record)
-                elif address != record["data"]:
-                    # PATCH
-                    print(f"Updating an existing record ({record_id}")
-                    result = requests.patch(
-                        f"{DYNV6_PREFIX}/{zone_id}/records/{record_id}",
-                        headers=headers,
-                        params=record,
-                    )
-                    result_id = result.json().get("id")
-                    if result_id:
-                        if record_id == result_id:
-                            print(f"Successfully updated {record_id}: {address}")
-                        else:
-                            print(
-                                f"Error! Attempted to update record {record_id}"
-                                f" but updated {result_id} instead."
-                            )
-                    else:
-                        print(
-                            f"Error updating record {record_id}: {result} ({result.json()})",
-                            file=sys.stderr,
-                        )
+            if result.status_code != 200:
+                print(f"Error updating a record: {result}", file=sys.stderr)
+                continue
+            result_id = result.json().get("id")
+            if result_id:
+                if record["id"] == result_id:
+                    print(f"Successfully updated {record["id"]}: {record["data"]}")
                 else:
-                    print(f"Address unchanged: {address}")
-                results.append(record)
+                    print(
+                        f"Error! Attempted to update record {record["id"]}"
+                        f" but updated {result_id} instead."
+                    )
+            else:
+                print(
+                    f"Error updating record {record["id"]}: {result} ({result.json()})",
+                    file=sys.stderr,
+                )
+        results.append(record)
+
+    with open(ZONE_FILE, "w", encoding="utf8") as zone_file:
+        zone_data = {"id": zone_id}
+        if zone:
+            zone_data["name"] = zone
+        json.dump(zone_data, zone_file)
+        print("", file=zone_file)
 
     with open(RECORDS_FILE, "w", encoding="utf8") as records_file:
         json.dump(results, records_file)
