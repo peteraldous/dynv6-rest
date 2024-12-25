@@ -70,6 +70,12 @@ def main():
         `my.zone`, then specifying a prefix of example updates `example.my.zone`.""",
         required=True,
     )
+    parser.add_argument(
+        "-4",
+        "--ipv4",
+        help="Update the ipv4 address and not just the ipv6 address",
+        action="store_true",
+    )
     args = parser.parse_args()
     ipv6_external_address = args.ipv6
     token = args.token
@@ -142,10 +148,12 @@ def main():
     except json.decoder.JSONDecodeError:
         pass
 
-    current_address4 = None
-    # uncomment to enable updating of an A record
-    # This line obtains a publicly-visible ipv4 address
-    # current_address4 = requests.get("https://api.ipify.org").content.decode("utf8")
+    if args.ipv4:
+        # This line obtains a publicly-visible ipv4 address
+        current_address4 = requests.get("https://api.ipify.org").content.decode("utf8")
+    else:
+        current_address4 = None
+
     try:
         # Attempt to connect to an external host using ipv6 and then get the socket's IP address
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
