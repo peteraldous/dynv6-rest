@@ -172,7 +172,9 @@ def main():
     if current_address4 is not None:
         if cache_address4 == current_address4:
             print(f"Address unchanged: {current_address4}")
-        records.append({"id": cache_id4, "type": "A", "name": prefix, "data": current_address4})
+        records.append(
+            {"id": cache_id4, "type": "A", "name": prefix, "data": current_address4}
+        )
     if current_address6 is not None:
         if cache_address6 == current_address6:
             print(f"Address unchanged: {current_address6}")
@@ -194,7 +196,10 @@ def main():
                 params=record,
             )
             if result.status_code != 200:
-                print(f"Error creating a new record: {result} ({result.reason})", file=sys.stderr)
+                print(
+                    f"Error creating a new record: {result} ({result.reason})",
+                    file=sys.stderr,
+                )
                 continue
             record["id"] = result.json().get("id")
             print(record)
@@ -232,9 +237,10 @@ def main():
         json.dump(zone_data, zone_file)
         print("", file=zone_file)
 
-    with open(RECORDS_FILE, "w", encoding="utf8") as records_file:
-        json.dump(results, records_file)
-        print("", file=records_file)
+    if results:
+        with open(RECORDS_FILE, "w", encoding="utf8") as records_file:
+            json.dump(results, records_file)
+            print("", file=records_file)
 
 
 if __name__ == "__main__":
