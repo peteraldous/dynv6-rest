@@ -59,6 +59,11 @@ def main():
         "-t", "--token", required=True, help="An HTTP token from https://dynv6.com/keys"
     )
     parser.add_argument(
+        "-d",
+        "--device",
+        help="The name of the network interface to use for getting the current ipv6 address",
+    )
+    parser.add_argument(
         "-p",
         "--prefix",
         help="""The prefix for the record to be updated. If your dynv6 zone has the domain
@@ -145,6 +150,10 @@ def main():
         # Attempt to connect to an external host using ipv6 and then get the socket's IP address
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
         sock.connect((ipv6_external_address, 1))
+        if args.device:
+            sock.setsockopt(
+                socket.SOL_SOCKET, socket.SO_BINDTODEVICE, bytes(args.device, "utf-8")
+            )
         current_address6 = sock.getsockname()[0]
     except OSError:
         current_address6 = None
