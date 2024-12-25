@@ -200,9 +200,9 @@ def main():
             print(record)
         else:
             # PATCH
-            print(f"Updating an existing record ({record["id"]})")
+            print(f"Updating an existing record ({record['id']})")
             result = requests.patch(
-                f"{DYNV6_PREFIX}/{zone_id}/records/{record["id"]}",
+                f"{DYNV6_PREFIX}/{zone_id}/records/{record['id']}",
                 headers=headers,
                 params=record,
             )
@@ -212,15 +212,15 @@ def main():
             result_id = result.json().get("id")
             if result_id:
                 if record["id"] == result_id:
-                    print(f"Successfully updated {record["id"]}: {record["data"]}")
+                    print(f"Successfully updated {record['id']}: {record['data']}")
                 else:
                     print(
-                        f"Error! Attempted to update record {record["id"]}"
+                        f"Error! Attempted to update record {record['id']}"
                         f" but updated {result_id} instead."
                     )
             else:
                 print(
-                    f"Error updating record {record["id"]}: {result} ({result.json()})",
+                    f"Error updating record {record['id']}: {result} ({result.json()})",
                     file=sys.stderr,
                 )
         results.append(record)
